@@ -1,0 +1,285 @@
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use std::sync::Mutex;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use tauri::{Emitter, Manager};
+use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Transaction {
+    pub id: String,
+    pub date: String,
+    #[serde(rename = "type")]
+    pub tx_type: String,
+    pub category: String,
+    pub subcategory: String,
+    pub description: String,
+    pub amount: f64,
+    #[serde(rename = "orderOfEntry")]
+    pub order_of_entry: u32,
+    #[serde(rename = "customData", skip_serializing_if = "Option::is_none")]
+    pub custom_data: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CashBook {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub currency: String,
+    #[serde(rename = "beginningBalance")]
+    pub beginning_balance: f64,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "passwordHash", skip_serializing_if = "Option::is_none")]
+    pub password_hash: Option<String>,
+    #[serde(rename = "passwordSalt", skip_serializing_if = "Option::is_none")]
+    pub password_salt: Option<String>,
+    #[serde(rename = "type")]
+    pub book_type: String,
+    pub transactions: Vec<Transaction>,
+    pub categories: Vec<serde_json::Value>,
+    #[serde(rename = "regularPayments")]
+    pub regular_payments: Vec<serde_json::Value>,
+    pub settings: serde_json::Value,
+}
+
+/// Resolves a path string into a `FilePath`, interpreting `content://` (Android SAF)
+/// and `file://` URIs as URLs so the fs plugin can open them through the content resolver.
+/// Multi-char schemes are treated as URLs; single-char schemes (e.g. `C:\…`) stay paths.
+fn resolve_fs_path(s: &str) -> FilePath {
+    FilePath::from_str(s).unwrap_or_else(|_| PathBuf::from(s).into())
+}
+
+/// Cross-platform write: desktop uses the plain filesystem (with parent-dir creation);
+/// Android SAF URIs are written through the fs plugin's content-resolver file descriptor.
+fn write_bytes(app: &tauri::AppHandle, path: &str, content: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let fp = resolve_fs_path(path);
+    if let FilePath::Path(p) = &fp {
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    let mut file = app
+        .fs()
+        .open(fp, opts)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    file.write_all(content)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn read_cashbook(app: tauri::AppHandle, path: String) -> Result<CashBook, String> {
+    let content = app
+        .fs()
+        .read_to_string(resolve_fs_path(&path))
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    let cashbook: CashBook =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+    Ok(cashbook)
+}
+
+#[tauri::command]
+fn write_cashbook(app: tauri::AppHandle, path: String, cashbook: CashBook) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(&cashbook)
+        .map_err(|e| format!("Failed to serialize: {}", e))?;
+    write_bytes(&app, &path, json.as_bytes())
+}
+
+#[tauri::command]
+fn get_save_path(default_name: String) -> Result<String, String> {
+    let desktop = dirs::desktop_dir().ok_or("Could not find desktop directory")?;
+    let path = desktop.join(format!("{}.cshon", default_name));
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn write_file(app: tauri::AppHandle, path: String, content: String) -> Result<(), String> {
+    write_bytes(&app, &path, content.as_bytes())
+}
+
+#[tauri::command]
+fn read_file(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    app.fs()
+        .read_to_string(resolve_fs_path(&path))
+        .map_err(|e| format!("Failed to read file: {}", e))
+}
+
+fn is_cashbook_arg(arg: &str) -> bool {
+    Path::new(arg)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("cshon") || e.eq_ignore_ascii_case("ecm"))
+        .unwrap_or(false)
+}
+
+fn cashbook_from_args(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|a| is_cashbook_arg(a))
+        .cloned()
+}
+
+/// Android-only companion to `tauri-plugin-dialog`.
+///
+/// `openDocument` (Kotlin) runs the same fast `ACTION_GET_CONTENT` picker but asks for a
+/// write grant as well, which is what lets Save overwrite a cloud file in place instead of
+/// falling back to a "save a copy" dialog. JS drives it directly: `openDocument` answers as
+/// soon as the picker is up and `getPickResult` hands over the picked uri, because a response
+/// from an Android activity callback never reaches the webview.
+/// `write_cashbook_document` performs the write in Kotlin rather
+/// than through `tauri-plugin-fs`, whose Android `getFileDescriptor` swallows resolver failures
+/// by never settling the invoke — that turned every failed save into a silent no-op.
+#[cfg(target_os = "android")]
+mod doc {
+    use super::*;
+    use tauri::{plugin::PluginHandle, Manager, Runtime};
+
+    const PLUGIN_IDENTIFIER: &str = "com.cashonn.app";
+
+    pub struct DocHandle<R: Runtime>(pub Mutex<Option<PluginHandle<R>>>);
+
+    pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+        tauri::plugin::Builder::new("doc")
+            .setup(|app, api| {
+                let handle = api.register_android_plugin(PLUGIN_IDENTIFIER, "DocPlugin")?;
+                app.manage(DocHandle(Mutex::new(Some(handle))));
+                Ok(())
+            })
+            // Deliberately no `open_document` command here. A Rust wrapper around the Kotlin
+            // `openDocument` would block on run_mobile_plugin until Kotlin answers, and Kotlin
+            // can only answer once the user leaves the picker - an activity-callback response
+            // is dropped before it reaches the webview, so the wrapper would wait forever and
+            // the frontend would hang on "Opening...". JS therefore calls the Kotlin commands
+            // directly (`plugin:doc|open_document` then `plugin:doc|get_pick_result`).
+            //
+            // `write_cashbook_document` stays on the Rust side because it serializes the
+            // cashbook, keeping the on-disk format in one place.
+            .invoke_handler(tauri::generate_handler![write_cashbook_document])
+            .build()
+    }
+
+    fn handle<R: Runtime>(
+        state: tauri::State<'_, DocHandle<R>>,
+    ) -> Result<PluginHandle<R>, String> {
+        state
+            .0
+            .lock()
+            .map_err(|_| "doc handle lock poisoned".to_string())?
+            .as_ref()
+            .ok_or("doc plugin not initialized".to_string())
+            .cloned()
+    }
+
+    #[tauri::command]
+    pub fn write_cashbook_document(
+        state: tauri::State<'_, DocHandle<tauri::Wry>>,
+        path: String,
+        cashbook: CashBook,
+    ) -> Result<(), String> {
+        // Serialize here rather than in the frontend so Android files stay byte-identical to
+        // the desktop `write_cashbook` output and there is a single source of truth for the
+        // on-disk format.
+        let json = serde_json::to_string_pretty(&cashbook)
+            .map_err(|e| format!("Failed to serialize: {}", e))?;
+        handle(state)?
+            .run_mobile_plugin::<serde_json::Value>(
+                "writeDocument",
+                serde_json::json!({ "uri": path, "content": json }),
+            )
+            .map(|_| ())
+            .map_err(|e| format!("{}", e))
+    }
+
+    /// Opens the Android system print dialog for pre-rendered cashbook HTML.
+    ///
+    /// Android WebView has no `window.print()`, so the frontend cannot print by itself. The
+    /// markup is produced by the shared print template in `src/utils/print.ts` and handed to
+    /// `PrintManager` here, which is the only route to the real print UI (and "Save as PDF").
+    #[tauri::command]
+    pub fn print_cashbook(
+        state: tauri::State<'_, DocHandle<tauri::Wry>>,
+        html: String,
+        job_name: String,
+    ) -> Result<(), String> {
+        handle(state)?
+            .run_mobile_plugin::<serde_json::Value>(
+                "printCashbook",
+                serde_json::json!({ "html": html, "jobName": job_name }),
+            )
+            .map(|_| ())
+            .map_err(|e| format!("{}", e))
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn focus_main_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+}
+
+#[tauri::command]
+fn take_startup_file(state: tauri::State<'_, Mutex<Option<String>>>) -> Option<String> {
+    state.lock().ok().and_then(|mut g| g.take())
+}
+
+/// Force-close the app. `WebviewWindow::destroy()` is a no-op on Android, so
+/// the frontend routes File → Exit here on that platform.
+#[tauri::command]
+fn exit_app() {
+    std::process::exit(0);
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let startup_file = cashbook_from_args(&std::env::args().collect::<Vec<_>>());
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = tauri::Builder::default()
+        .manage(Mutex::new(startup_file))
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            focus_main_window(app);
+            if let Some(path) = cashbook_from_args(&argv) {
+                let _ = app.emit("open-file", path);
+            }
+        }));
+
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let mut builder = tauri::Builder::default().manage(Mutex::new(startup_file));
+
+    // Android-only: fast file picker that also requests a write grant, plus a write path
+    // that reports failures instead of hanging. See the `doc` module and DR-46.
+    #[cfg(target_os = "android")]
+    {
+        builder = builder.plugin(doc::init());
+    }
+
+    builder
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![
+            read_cashbook,
+            write_cashbook,
+            get_save_path,
+            write_file,
+            read_file,
+            take_startup_file,
+            exit_app,
+            // Android-only passthrough to the `doc` plugin's print command. It is harmless on
+            // desktop because the command does not exist there and is never invoked; the
+            // frontend only calls it when it detects the Android runtime.
+            #[cfg(target_os = "android")]
+            doc::print_cashbook,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

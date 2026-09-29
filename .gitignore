@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Frontend build output
+dist/
+
+# Rust / Tauri build output
+src-tauri/target/
+.tauri/
+
+# Signing material - never commit these
+*.keystore
+*.jks
+key.properties
+keystore.properties
+src-tauri/gen/android/local.properties
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
