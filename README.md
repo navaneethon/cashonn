@@ -134,13 +134,43 @@ npx tauri android build --apk --target aarch64   # arm64 only, smaller
 Output: `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk`
 
 > **Important — stale-asset guard.** Tauri embeds `dist/` into the Rust binary at **compile** time. If you only
-> changed `src/`, cargo will not recompile and the binary keeps serving the previous build. Force a rebuild with:
+> changed `src/`, cargo will not recompile and the binary keeps serving the previous build. Force a rebuild by
+> touching the build script (this changes its mtime, nothing else):
 > ```bash
-> touch src-tauri/build.rs        # or: cargo clean -p cashonn
+> touch src-tauri/build.rs
 > ```
+> Do **not** rely on `cargo clean -p cashonn` for this. It cleans the *host* target only; measured on this
+> project it removed 49 host files but **0** cross-target Android files, so a previously-built APK would keep
+> serving stale assets.
 > Verify the result by confirming the current bundle name is embedded in the binary — the string
 > `index-<hash>.js` should appear inside `cashonn.exe`, or inside
 > `lib/<abi>/libcashonn_lib.so` inside the APK. A missing new hash means you shipped a stale build.
+
+### Production build (macOS)
+macOS artifacts **cannot** be cross-compiled from Windows or Linux — Tauri embeds the frontend into a native
+binary and requires the macOS toolchain. Build it on a Mac, or let GitHub Actions do it.
+
+```bash
+# on a macOS machine with Xcode CLT + Rust installed
+npm ci && npx tauri build --target universal-apple-darwin
+```
+
+Output: `src-tauri/target/universal-apple-darwin/release/bundle/macos/` and `.../bundle/dmg/`
+
+The committed workflow `.github/workflows/macos-build.yml` runs exactly that on a `macos-latest` runner and
+uploads both the `.app` and the `.dmg` as artifacts. It triggers on a `v*` tag push, or manually via
+**Actions → macOS build → Run workflow**.
+
+> **Bundle identifier.** The base `tauri.conf.json` uses `com.cashonn.app`, which Tauri warns ends with `.app`
+> and therefore collides with the macOS bundle extension. `src-tauri/tauri.macos.conf.json` overrides the
+> identifier to `com.navaneeth.cashonn` for macOS only. Tauri merges that file over the base config using
+> JSON Merge Patch, so **Android keeps `com.cashonn.app`** and existing installs update normally.
+> Never "fix" the warning by editing the base identifier — that would break Android upgrade continuity.
+
+> **Signing.** The workflow produces **unsigned** builds. They run fine on the Mac that built them; on any
+> other Mac Gatekeeper will block them (right-click → Open, or System Settings → Privacy & Security → Open
+> Anyway). To distribute to other people you need a "Developer ID Application" certificate and Apple
+> notarisation — the workflow documents the five `APPLE_*` repository secrets needed.
 
 ---
 
@@ -167,6 +197,7 @@ cashmanager-app/
     ├── Cargo.toml
     ├── build.rs              # command allowlist; also the stale-asset rebuild trigger
     ├── tauri.conf.json
+    ├── tauri.macos.conf.json # macOS-only override: bundle identifier (see build notes)
     ├── capabilities/         # default.json
     ├── src/                  # Rust: lib.rs, main.rs, file I/O + mobile print commands
     └── gen/android/          # Android project (tracked: Kotlin plugin sources, gradle, res)
@@ -175,6 +206,8 @@ cashmanager-app/
             └── DocPlugin.kt  # SAF open/save + native PrintManager print
 ```
 
+`.github/workflows/macos-build.yml` is tracked in the repo root's `.github/workflows/`.
+
 ### Architecture notes
 - **Android plugin commands** live in `DocPlugin.kt` and are bridged from Rust in the `doc` module of
   `src-tauri/src/lib.rs`. The print command is Android-only; the frontend only invokes it after detecting
@@ -182,6 +215,13 @@ cashmanager-app/
 - **Roomy menu density** is driven by React context in `src/components/ui/dropdown-menu.tsx`. Base UI renders
   submenu popups in a portal, so a CSS descendant selector cannot reach them, but a context can — that is what
   lets the phone menu get 44px targets without duplicating the item lists.
+- **Release profile.** `src-tauri/Cargo.toml` sets `lto = "thin"`, `codegen-units = 1` and `strip = true`.
+  Without it cargo ships defaults, and the native libraries end up roughly 40% larger — most of the Android win
+  comes from `strip`, since the Gradle release `.so` files were previously unstripped. `thin` LTO is used
+  instead of fat LTO because it captures most of the benefit at a fraction of the link time.
+- **Binary size is dominated by the Tauri runtime, not by application code.** The whole frontend `dist/` is
+  ~780 KB while a single release `libcashonn_lib.so` is ~7.8 MB (arm64). Trimming TypeScript has little effect;
+  cutting ABIs does. An arm64-only APK is roughly half the universal one.
 
 ---
 

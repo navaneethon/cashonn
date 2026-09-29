@@ -25,3 +25,12 @@ dirs = "5"
 [features]
 # this feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+
+# Ship smaller binaries. Without this, cargo defaults to no LTO, 16 codegen units and
+# retained symbols, which is a large slice of the ~14MB release library.
+# `lto = "thin"` rather than `true` (fat): most of the size win at a fraction of the
+# link time, which matters because both the desktop and the Android APK are built often.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

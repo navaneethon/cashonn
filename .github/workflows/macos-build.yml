@@ -1,0 +1,77 @@
+# Builds a signed-ready macOS .app and .dmg on a macOS runner.
+#
+# This is the only way to get a macOS artifact out of this project: Tauri embeds the
+# frontend into a native binary and macOS toolchains cannot be cross-compiled from
+# Windows or Linux, so a macOS runner is mandatory.
+#
+# Signing and notarisation are OPTIONAL. Without them the build still produces a working
+# .app/.dmg, but macOS Gatekeeper blocks it on any Mac other than the one that built it
+# (right-click > Open, or System Settings > Privacy & Security > Open Anyway).
+# To enable real signing, add these repository secrets and uncomment the step below:
+#   APPLE_CERTIFICATE          base64 of the "Developer ID Application" .p12
+#   APPLE_CERTIFICATE_PASSWORD password for that .p12
+#   APPLE_ID                   Apple ID
+#   APPLE_TEAM_ID              10-char team id
+#   APPLE_PASSWORD             app-specific password
+name: macOS build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-latest is Apple Silicon. universal-apple-darwin needs both Rust targets below.
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      # When you add the signing secrets, set the same APPLE_* env vars on THIS step
+      # (Tauri signs and notarises as part of the build) rather than adding a second
+      # build step, which would compile the whole app twice.
+      - name: Build macOS app
+        env:
+          CI: 'true'
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Upload .app
+        uses: actions/upload-artifact@v4
+        with:
+          name: cashonn-macos-app
+          path: src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
+          if-no-files-found: error
+
+      - name: Upload .dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: cashonn-macos-dmg
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
