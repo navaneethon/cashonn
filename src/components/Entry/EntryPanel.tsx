@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TrendingUp, TrendingDown, CalendarDays } from "lucide-react";
 import { formatDate, parseDate, getTodayString, byLabel } from "@/utils/format";
+import { categoryNameFor } from "@/utils/categories";
 import type { CustomColumn } from "@/types";
 
 export function EntryPanel() {
@@ -128,7 +129,7 @@ export function EntryPanel() {
       if (dateText.trim() && !iso) setStatusMessage(`Invalid date — expected format like ${formatDate("2026-01-31", dateFormat)}`);
       return;
     }
-    const category = type === "income" ? "incomes" : "expenses";
+    const category = categoryNameFor(categories, type);
     addTransaction({ type, date: iso, amount: parseFloat(amount) || 0, category, subcategory, description, customData: customValues });
     resetForm();
   };
@@ -140,7 +141,7 @@ export function EntryPanel() {
       setStatusMessage(`Invalid date — expected format like ${formatDate("2026-01-31", dateFormat)}`);
       return;
     }
-    const category = type === "income" ? "incomes" : "expenses";
+    const category = categoryNameFor(categories, type);
     updateTransaction(selectedId, { type, date: iso, amount: parseFloat(amount) || 0, category, subcategory, description, customData: customValues });
     setSelectedTransaction(null);
     resetForm();
@@ -244,7 +245,7 @@ export function EntryPanel() {
                   <div
                     className="px-3 py-1.5 text-sm text-primary cursor-pointer hover:bg-accent flex items-center gap-1.5 border-t border-border"
                     onMouseDown={() => {
-                      const catName = type === "income" ? "incomes" : "expenses";
+                      const catName = categoryNameFor(categories, type);
                       addSubcategory(catName, catSearch);
                       setSubcategory(catSearch);
                       setCatSearch("");

@@ -2,6 +2,7 @@
 import { csvToTransactions, transactionsToCSV, type CsvColumnMapping } from "@/utils/csv";
 import { applyFilter } from "@/utils/filter";
 import { insertByDate, mergeByDate } from "@/utils/sort";
+import { categoryAliases, categoryIndexFor, categoryNameFor } from "@/utils/categories";
 import type { CashBook, OpenCashbook, Transaction, CashBookSettings, RegularPayment, CustomColumn, CustomColumnOption } from "@/types";
 
 function isTauri(): boolean {
@@ -261,6 +262,9 @@ setActiveDialog: (dialog: string | null) => void;
 
 addSubcategory: (categoryName: string, subcategoryName: string) => void;
   ensureSubcategory: (categoryName: string, subcategoryName: string) => void;
+  subcategoryUsage: (categoryName: string, subcategoryName: string) => number;
+  removeSubcategory: (categoryName: string, subcategoryName: string) => boolean;
+  renameSubcategory: (categoryName: string, oldName: string, newName: string) => boolean;
   addCustomColumnOption: (columnId: string, optionName: string) => void;
   addRegularPayment: (payment: Omit<RegularPayment, "id">) => void;
   removeRegularPayment: (paymentId: string) => void;
@@ -504,7 +508,14 @@ updateTransaction: (txId, updates) => {
     if (selectedTransactionId) set({ activeDialog: "confirm-delete" });
   },
 
-  addSubcategory: (categoryName, subcategoryName) => {
+addSubcategory: (categoryName, subcategoryName) => {
+    const name = subcategoryName.trim();
+    if (!name) return;
+    const activeCb = get().getActiveCashbook();
+    if (!activeCb) return;
+    const cat = activeCb.cashbook.categories.find((c) => c.name === categoryName);
+    if (!cat) return;
+    if (cat.subcategories.some((s) => s.name.toLowerCase() === name.toLowerCase())) return;
     set((state) => ({
       openCashbooks: state.openCashbooks.map((cb) =>
         cb.cashbook.id === state.activeCashbookId
@@ -519,7 +530,7 @@ updateTransaction: (txId, updates) => {
                         ...cat,
                         subcategories: [
                           ...cat.subcategories,
-                          { id: generateId(), name: subcategoryName, capitalizedName: subcategoryName },
+                          { id: generateId(), name, capitalizedName: name },
                         ],
                       }
                     : cat
@@ -539,6 +550,103 @@ updateTransaction: (txId, updates) => {
     if (cat && !cat.subcategories.some((s) => s.name === subcategoryName)) {
       get().addSubcategory(categoryName, subcategoryName);
     }
+  },
+
+  /**
+   * How many entries (transactions + regular payments) depend on a
+   * subcategory. Drives the delete affordance: a subcategory in use must be
+   * renamed instead of deleted, otherwise those entries would keep a name that
+   * no longer exists in the category.
+   */
+  subcategoryUsage: (categoryName, subcategoryName) => {
+    const activeCb = get().getActiveCashbook();
+    if (!activeCb) return 0;
+    const idx = categoryIndexFor(activeCb.cashbook.categories, categoryName);
+    if (idx === -1) return 0;
+    const aliases = categoryAliases(activeCb.cashbook.categories, idx);
+    const { transactions, regularPayments } = activeCb.cashbook;
+    const usedBy = (category: string, subcategory: string) =>
+      subcategory === subcategoryName && aliases.includes(category);
+    return (
+      transactions.filter((tx) => usedBy(tx.category, tx.subcategory)).length +
+      regularPayments.filter((rp) => usedBy(rp.category, rp.subcategory)).length
+    );
+  },
+
+  /** Removes a subcategory. Refused while any entry still uses it. */
+  removeSubcategory: (categoryName, subcategoryName) => {
+    if (get().subcategoryUsage(categoryName, subcategoryName) > 0) return false;
+    const activeCb = get().getActiveCashbook();
+    if (!activeCb) return false;
+    const cat = activeCb.cashbook.categories.find((c) => c.name === categoryName);
+    if (!cat?.subcategories.some((s) => s.name === subcategoryName)) return false;
+    set((state) => ({
+      openCashbooks: state.openCashbooks.map((cb) =>
+        cb.cashbook.id === state.activeCashbookId
+          ? {
+              ...cb,
+              isDirty: true,
+              cashbook: {
+                ...cb.cashbook,
+                categories: cb.cashbook.categories.map((c) =>
+                  c.name === categoryName
+                    ? { ...c, subcategories: c.subcategories.filter((s) => s.name !== subcategoryName) }
+                    : c
+                ),
+              },
+            }
+          : cb
+      ),
+    }));
+    return true;
+  },
+
+  /** Renames a subcategory and cascades the new name to every entry using it. */
+  renameSubcategory: (categoryName, oldName, newName) => {
+    const name = newName.trim();
+    if (!name || name === oldName) return false;
+    const activeCb = get().getActiveCashbook();
+    if (!activeCb) return false;
+    const idx = categoryIndexFor(activeCb.cashbook.categories, categoryName);
+    if (idx === -1) return false;
+    const cat = activeCb.cashbook.categories[idx];
+    const target = cat?.subcategories.find((s) => s.name === oldName);
+    if (!target) return false;
+    if (cat!.subcategories.some((s) => s.id !== target.id && s.name.toLowerCase() === name.toLowerCase())) return false;
+    const aliases = categoryAliases(activeCb.cashbook.categories, idx);
+    const applies = (category: string, subcategory: string) =>
+      subcategory === oldName && aliases.includes(category);
+    set((state) => ({
+      openCashbooks: state.openCashbooks.map((cb) =>
+        cb.cashbook.id === state.activeCashbookId
+          ? {
+              ...cb,
+              isDirty: true,
+              cashbook: {
+                ...cb.cashbook,
+                categories: cb.cashbook.categories.map((c, i) =>
+                  i === idx
+                    ? {
+                        ...c,
+                        subcategories: c.subcategories.map((s) =>
+                          s.id === target.id ? { ...s, name, capitalizedName: name } : s
+                        ),
+                      }
+                    : c
+                ),
+                transactions: cb.cashbook.transactions.map((tx) =>
+                  applies(tx.category, tx.subcategory) ? { ...tx, subcategory: name } : tx
+                ),
+                regularPayments: cb.cashbook.regularPayments.map((rp) =>
+                  applies(rp.category, rp.subcategory) ? { ...rp, subcategory: name } : rp
+                ),
+              },
+            }
+          : cb
+      ),
+      filter: state.filter?.subcategory === oldName ? { ...state.filter, subcategory: name } : state.filter,
+    }));
+    return true;
   },
 
   addCustomColumnOption: (columnId, optionName) => {
@@ -614,6 +722,9 @@ importTransactions: async (csvData, mappings) => {
       ...tx,
       id: crypto.randomUUID(),
       orderOfEntry: baseTxCount + i + 1,
+      // A CSV carries no category names, so rows arrive on the legacy defaults.
+      // Map them onto this book's categories, which may have been renamed.
+      category: categoryNameFor(activeCb?.cashbook.categories ?? [], tx.type),
     }));
     const combinedCols = [...existingCustom, ...newCustomColumns];
     const seededCols = seedListColumnOptions(combinedCols, combinedCols, [
@@ -714,28 +825,50 @@ importTransactions: async (csvData, mappings) => {
     }));
   },
 
-  updateCategoryNames: (categoryNames) => {
+updateCategoryNames: (categoryNames) => {
+    const activeCb = get().getActiveCashbook();
+    const renameMap = new Map<string, string>();
+    activeCb?.cashbook.categories.forEach((cat, idx) => {
+      let next = cat.name;
+      if (cat.name === "incomes" || idx === 0) next = categoryNames.incomesLower || cat.name;
+      else if (cat.name === "expenses" || idx === 1) next = categoryNames.expensesLower || cat.name;
+      if (next !== cat.name) renameMap.set(cat.name, next);
+    });
+    const remap = (value: string) => renameMap.get(value) ?? value;
     set((state) => ({
       openCashbooks: state.openCashbooks.map((cb) =>
-        cb.cashbook.id === state.activeCashbookId
-          ? {
+        cb.cashbook.id !== state.activeCashbookId
+          ? cb
+          : {
               ...cb,
               isDirty: true,
               cashbook: {
                 ...cb.cashbook,
-                categories: cb.cashbook.categories.map((cat) => {
-                  if (cat.name === "incomes" || cat === cb.cashbook.categories[0]) {
+                categories: cb.cashbook.categories.map((cat, idx) => {
+                  if (cat.name === "incomes" || idx === 0) {
                     return { ...cat, name: categoryNames.incomesLower || cat.name, capitalizedName: categoryNames.incomesUpper || cat.capitalizedName };
                   }
-                  if (cat.name === "expenses" || cat === cb.cashbook.categories[1]) {
+                  if (cat.name === "expenses" || idx === 1) {
                     return { ...cat, name: categoryNames.expensesLower || cat.name, capitalizedName: categoryNames.expensesUpper || cat.capitalizedName };
                   }
                   return cat;
                 }),
+                // Entries store the category name denormalized, so they must
+                // follow the rename or they stop resolving to this category's
+                // subcategories and their names stop matching after a
+                // second rename.
+                transactions: renameMap.size
+                  ? cb.cashbook.transactions.map((tx) => ({ ...tx, category: remap(tx.category) }))
+                  : cb.cashbook.transactions,
+                regularPayments: renameMap.size
+                  ? cb.cashbook.regularPayments.map((rp) => ({ ...rp, category: remap(rp.category) }))
+                  : cb.cashbook.regularPayments,
               },
             }
-          : cb
       ),
+      filter: renameMap.size && state.filter?.category
+        ? { ...state.filter, category: remap(state.filter.category) }
+        : state.filter,
     }));
   },
 

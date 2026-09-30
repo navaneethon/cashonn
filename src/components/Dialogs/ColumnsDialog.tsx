@@ -1,12 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useCashbookStore, useActiveCashbook } from "@/stores/cashbookStore";
 import { useTranslation } from "@/i18n/useTranslation";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plus, Trash2, ChevronUp, ChevronDown } from "lucide-react";
+import { Plus, Trash2, ChevronUp, ChevronDown, Pencil } from "lucide-react";
+import { categoryAliases } from "@/utils/categories";
 import type { CustomColumn, CustomColumnType } from "@/types";
 
 interface ColumnsDialogProps {
@@ -90,8 +91,85 @@ function CustomColumnEditor({ column, isVisible, onToggleVisible, onChange, onRe
   );
 }
 
+function SubcategoryRow({ catName, name, usedCount, onRequestDelete }: {
+  catName: string;
+  name: string;
+  usedCount: number;
+  onRequestDelete: () => void;
+}) {
+  const renameSubcategory = useCashbookStore((s) => s.renameSubcategory);
+  const setStatusMessage = useCashbookStore((s) => s.setStatusMessage);
+  const { t } = useTranslation();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(name);
+
+  useEffect(() => setDraft(name), [name]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    if (!trimmed || trimmed === name) {
+      setDraft(name);
+      setEditing(false);
+      return;
+    }
+    if (!renameSubcategory(catName, name, trimmed)) {
+      setStatusMessage(t("subcategory.renameFailed"));
+      setDraft(name);
+    }
+    setEditing(false);
+  };
+
+  const inUse = t("subcategory.inUse").replace("{count}", String(usedCount));
+
+  if (editing) {
+    return (
+      <Input
+        className="h-7 w-32 text-xs"
+        value={draft}
+        autoFocus
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") {
+            setDraft(name);
+            setEditing(false);
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 text-xs bg-muted rounded-md px-2 py-0.5">
+      {name}
+      <button
+        className="text-muted-foreground hover:text-foreground"
+        title={t("subcategory.rename")}
+        onClick={() => { setDraft(name); setEditing(true); }}
+      >
+        <Pencil className="size-2.5" />
+      </button>
+      {usedCount > 0 ? (
+        <span className="text-[10px] text-muted-foreground" title={inUse}>
+          {usedCount}
+        </span>
+      ) : (
+        <button
+          className="text-muted-foreground hover:text-destructive"
+          title={t("subcategory.delete")}
+          onClick={onRequestDelete}
+        >
+          <Trash2 className="size-2.5" />
+        </button>
+      )}
+    </span>
+  );
+}
+
 export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
   const updateSettings = useCashbookStore((s) => s.updateSettings);
+  const removeSubcategory = useCashbookStore((s) => s.removeSubcategory);
   const activeCb = useActiveCashbook();
   const { t } = useTranslation();
 
@@ -101,6 +179,7 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
   const [showAdd, setShowAdd] = useState(false);
   const [newColName, setNewColName] = useState("");
   const [newColType, setNewColType] = useState<CustomColumnType>("text");
+  const [pendingDelete, setPendingDelete] = useState<{ categoryName: string; name: string } | null>(null);
 
   useEffect(() => {
     if (open && activeCb) {
@@ -110,6 +189,32 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
       setSplitAmount(s.splitIncomeExpenseColumns ?? true);
     }
   }, [open, activeCb]);
+
+  const categories = activeCb?.cashbook.categories ?? [];
+
+  // Subcategories are edited here directly, so count the entries that depend on
+  // each one. A subcategory still referenced by a transaction or a regular
+  // payment can only be renamed -- deleting it would strand those entries on a
+  // name that no longer exists in the category.
+  const usageByKey = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!activeCb) return counts;
+    const { transactions, regularPayments } = activeCb.cashbook;
+    const idxByAlias = new Map<string, number>();
+    categories.forEach((_, idx) => {
+      for (const alias of categoryAliases(categories, idx)) idxByAlias.set(alias, idx);
+    });
+    const bump = (category: string, subcategory: string) => {
+      if (!subcategory) return;
+      const idx = idxByAlias.get(category);
+      if (idx === undefined) return;
+      const key = `${idx}\u0000${subcategory}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    };
+    transactions.forEach((tx) => bump(tx.category, tx.subcategory));
+    regularPayments.forEach((rp) => bump(rp.category, rp.subcategory));
+    return counts;
+  }, [activeCb, categories]);
 
   const BUILTIN_COLUMNS = [
     { value: "category", label: t("ledger.category") },
@@ -214,6 +319,30 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
           </div>
 
           <div className="space-y-2">
+            <Label className="text-xs font-semibold text-muted-foreground uppercase">{t("ledger.subcategory")}</Label>
+            {categories.map((cat, idx) => (
+              <div key={cat.id} className="space-y-1.5">
+                <p className="text-xs text-muted-foreground">{cat.capitalizedName}</p>
+                {cat.subcategories.length === 0 ? (
+                  <p className="text-xs text-muted-foreground pl-1">{t("subcategory.none")}</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {cat.subcategories.map((sub) => (
+                      <SubcategoryRow
+                        key={sub.id}
+                        catName={cat.name}
+                        name={sub.name}
+                        usedCount={usageByKey.get(`${idx}\u0000${sub.name}`) ?? 0}
+                        onRequestDelete={() => setPendingDelete({ categoryName: cat.name, name: sub.name })}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-2">
             <div className="flex items-center justify-between">
               <Label className="text-xs font-semibold text-muted-foreground uppercase">Custom Columns</Label>
               <Button variant="ghost" size="sm" className="h-7 gap-1" onClick={() => setShowAdd(true)}>
@@ -272,6 +401,27 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
           <Button onClick={handleApply}>{t("dialog.apply")}</Button>
         </DialogFooter>
       </DialogContent>
+
+      <Dialog open={!!pendingDelete} onOpenChange={(o) => { if (!o) setPendingDelete(null); }}>
+        <DialogContent className="sm:max-w-[400px]">
+          <DialogHeader>
+            <DialogTitle>{t("subcategory.deleteTitle")}</DialogTitle>
+            <DialogDescription>{t("subcategory.deleteMessage")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDelete(null)}>{t("dialog.cancel")}</Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (pendingDelete) removeSubcategory(pendingDelete.categoryName, pendingDelete.name);
+                setPendingDelete(null);
+              }}
+            >
+              {t("confirmDelete.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
