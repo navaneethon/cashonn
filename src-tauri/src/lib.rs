@@ -115,7 +115,7 @@ fn is_cashbook_arg(arg: &str) -> bool {
     Path::new(arg)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.eq_ignore_ascii_case("cshon") || e.eq_ignore_ascii_case("ecm"))
+        .map(|e| e.eq_ignore_ascii_case("cshon"))
         .unwrap_or(false)
 }
 

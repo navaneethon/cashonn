@@ -78,7 +78,7 @@ class DocPlugin(private val activity: Activity) : Plugin(activity) {
    * seconds. ACTION_GET_CONTENT stays fast; providers that are willing to hand out write
    * access to a picked document do so, which is what makes Save a silent overwrite.
    *
-   * No EXTRA_MIME_TYPES: an unknown extension (cshon/ecm) resolves through MimeTypeMap to
+   * No EXTRA_MIME_TYPES: an unknown extension (cshon) resolves through MimeTypeMap to
    * nothing, and an empty whitelist hides cloud providers such as Google Drive.
    *
    * Resolves as soon as the picker is on screen; the picked document is collected separately

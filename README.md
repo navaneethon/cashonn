@@ -2,7 +2,7 @@
 
 Cross-platform cash-bookkeeping app for desktop (Windows) and Android. Built with **Tauri 2** + **React 19** + **TypeScript** + **Vite** + **Tailwind CSS v4** + **shadcn/ui v4**.
 
-**Current version:** `v1.13.0` · **App id:** `com.cashonn.app` · **Author:** Navaneeth Narayanan · **Cashbook extension:** `.cshon` (legacy `.ecm` still opens) · **Window:** 1280×800 (min 1024×700)
+**Current version:** `v1.13.0` · **App id:** `com.cashonn.app` · **Author:** Navaneeth Narayanan · **Cashbook extension:** `.cshon` · **Window:** 1280×800 (min 1024×700)
 
 > This repository holds the application source. Repository history begins at `v1.13.0`; earlier versions predate this repository.
 
@@ -75,7 +75,7 @@ Cross-platform cash-bookkeeping app for desktop (Windows) and Android. Built wit
 - Native file open/save dialogs; read/write cash-book files on disk.
 - Window close routed through the unsaved-changes flow (`core:window:allow-destroy`).
 - Bundled icons; MSI/NSIS installers via `tauri build`.
-- File associations for `.cshon` and `.ecm`.
+- File associations for `.cshon`.
 
 ### Android integration
 - Storage Access Framework open/save via `ACTION_OPEN_DOCUMENT` / `ACTION_CREATE_DOCUMENT`, with a **write grant** requested at open time.

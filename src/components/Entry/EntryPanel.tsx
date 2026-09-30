@@ -33,15 +33,12 @@ export function EntryPanel() {
   const nativeDateRef = useRef<HTMLInputElement>(null);
 
   const categories = activeCb?.cashbook.categories ?? [];
-  const allSubcategories = useMemo(() => {
-    const seen = new Map<string, typeof categories[0]["subcategories"][0]>();
-    for (const cat of categories) {
-      for (const sub of cat.subcategories) {
-        if (!seen.has(sub.name)) seen.set(sub.name, sub);
-      }
-    }
-    return Array.from(seen.values()).sort(byLabel);
-  }, [categories]);
+  // One flat list for the whole cashbook: a sub-category such as "Insurance"
+  // can apply to income and expense alike, so it is never grouped by category.
+  const allSubcategories = useMemo(
+    () => [...(activeCb?.cashbook.subcategories ?? [])].sort(byLabel),
+    [activeCb]
+  );
 
   const customColumns = activeCb?.cashbook.settings.customColumns ?? [];
 
@@ -245,8 +242,7 @@ export function EntryPanel() {
                   <div
                     className="px-3 py-1.5 text-sm text-primary cursor-pointer hover:bg-accent flex items-center gap-1.5 border-t border-border"
                     onMouseDown={() => {
-                      const catName = categoryNameFor(categories, type);
-                      addSubcategory(catName, catSearch);
+                      addSubcategory(catSearch);
                       setSubcategory(catSearch);
                       setCatSearch("");
                       setCatOpen(false);

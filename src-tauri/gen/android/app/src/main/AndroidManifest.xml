@@ -31,7 +31,6 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:mimeType="application/json" />
                 <data android:pathPattern=".*\\.cshon" />
-                <data android:pathPattern=".*\\.ecm" />
             </intent-filter>
             
             <!-- tauri-file-associations. AUTO-GENERATED. DO NOT REMOVE. -->

@@ -7,7 +7,6 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Plus, Trash2, ChevronUp, ChevronDown, Pencil } from "lucide-react";
-import { categoryAliases } from "@/utils/categories";
 import type { CustomColumn, CustomColumnType } from "@/types";
 
 interface ColumnsDialogProps {
@@ -91,8 +90,7 @@ function CustomColumnEditor({ column, isVisible, onToggleVisible, onChange, onRe
   );
 }
 
-function SubcategoryRow({ catName, name, usedCount, onRequestDelete }: {
-  catName: string;
+function SubcategoryRow({ name, usedCount, onRequestDelete }: {
   name: string;
   usedCount: number;
   onRequestDelete: () => void;
@@ -112,7 +110,7 @@ function SubcategoryRow({ catName, name, usedCount, onRequestDelete }: {
       setEditing(false);
       return;
     }
-    if (!renameSubcategory(catName, name, trimmed)) {
+    if (!renameSubcategory(name, trimmed)) {
       setStatusMessage(t("subcategory.renameFailed"));
       setDraft(name);
     }
@@ -179,7 +177,7 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
   const [showAdd, setShowAdd] = useState(false);
   const [newColName, setNewColName] = useState("");
   const [newColType, setNewColType] = useState<CustomColumnType>("text");
-  const [pendingDelete, setPendingDelete] = useState<{ categoryName: string; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   useEffect(() => {
     if (open && activeCb) {
@@ -190,31 +188,27 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
     }
   }, [open, activeCb]);
 
-  const categories = activeCb?.cashbook.categories ?? [];
+  const subcategories = activeCb?.cashbook.subcategories ?? [];
 
-  // Subcategories are edited here directly, so count the entries that depend on
-  // each one. A subcategory still referenced by a transaction or a regular
+  // Sub-categories are edited here directly, so count the entries that depend on
+  // each one. A sub-category still referenced by a transaction or a regular
   // payment can only be renamed -- deleting it would strand those entries on a
-  // name that no longer exists in the category.
-  const usageByKey = useMemo(() => {
+  // name that no longer exists in the cashbook.
+  //
+  // The list is flat, so usage is counted across income and expense together:
+  // the same sub-category is legitimately used on both sides.
+  const usageByName = useMemo(() => {
     const counts = new Map<string, number>();
     if (!activeCb) return counts;
     const { transactions, regularPayments } = activeCb.cashbook;
-    const idxByAlias = new Map<string, number>();
-    categories.forEach((_, idx) => {
-      for (const alias of categoryAliases(categories, idx)) idxByAlias.set(alias, idx);
-    });
-    const bump = (category: string, subcategory: string) => {
+    const bump = (subcategory: string) => {
       if (!subcategory) return;
-      const idx = idxByAlias.get(category);
-      if (idx === undefined) return;
-      const key = `${idx}\u0000${subcategory}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      counts.set(subcategory, (counts.get(subcategory) ?? 0) + 1);
     };
-    transactions.forEach((tx) => bump(tx.category, tx.subcategory));
-    regularPayments.forEach((rp) => bump(rp.category, rp.subcategory));
+    transactions.forEach((tx) => bump(tx.subcategory));
+    regularPayments.forEach((rp) => bump(rp.subcategory));
     return counts;
-  }, [activeCb, categories]);
+  }, [activeCb]);
 
   const BUILTIN_COLUMNS = [
     { value: "category", label: t("ledger.category") },
@@ -320,26 +314,20 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
 
           <div className="space-y-2">
             <Label className="text-xs font-semibold text-muted-foreground uppercase">{t("ledger.subcategory")}</Label>
-            {categories.map((cat, idx) => (
-              <div key={cat.id} className="space-y-1.5">
-                <p className="text-xs text-muted-foreground">{cat.capitalizedName}</p>
-                {cat.subcategories.length === 0 ? (
-                  <p className="text-xs text-muted-foreground pl-1">{t("subcategory.none")}</p>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {cat.subcategories.map((sub) => (
-                      <SubcategoryRow
-                        key={sub.id}
-                        catName={cat.name}
-                        name={sub.name}
-                        usedCount={usageByKey.get(`${idx}\u0000${sub.name}`) ?? 0}
-                        onRequestDelete={() => setPendingDelete({ categoryName: cat.name, name: sub.name })}
-                      />
-                    ))}
-                  </div>
-                )}
+            {subcategories.length === 0 ? (
+              <p className="text-xs text-muted-foreground">{t("subcategory.none")}</p>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {subcategories.map((sub) => (
+                  <SubcategoryRow
+                    key={sub.id}
+                    name={sub.name}
+                    usedCount={usageByName.get(sub.name) ?? 0}
+                    onRequestDelete={() => setPendingDelete(sub.name)}
+                  />
+                ))}
               </div>
-            ))}
+            )}
           </div>
 
           <div className="space-y-2">
@@ -413,7 +401,7 @@ export function ColumnsDialog({ open, onOpenChange }: ColumnsDialogProps) {
             <Button
               variant="destructive"
               onClick={() => {
-                if (pendingDelete) removeSubcategory(pendingDelete.categoryName, pendingDelete.name);
+                if (pendingDelete) removeSubcategory(pendingDelete);
                 setPendingDelete(null);
               }}
             >

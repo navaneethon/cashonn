@@ -38,7 +38,7 @@
     ],
     "fileAssociations": [
       {
-        "ext": ["cshon", "ecm"],
+        "ext": ["cshon"],
         "name": "Cashonn Cashbook",
         "role": "Editor",
         "mimeType": "application/json"

@@ -2,8 +2,8 @@
 import { csvToTransactions, transactionsToCSV, type CsvColumnMapping } from "@/utils/csv";
 import { applyFilter } from "@/utils/filter";
 import { insertByDate, mergeByDate } from "@/utils/sort";
-import { categoryAliases, categoryIndexFor, categoryNameFor } from "@/utils/categories";
-import type { CashBook, OpenCashbook, Transaction, CashBookSettings, RegularPayment, CustomColumn, CustomColumnOption } from "@/types";
+import { categoryNameFor } from "@/utils/categories";
+import type { CashBook, OpenCashbook, Transaction, CashBookSettings, RegularPayment, CustomColumn, CustomColumnOption, Subcategory } from "@/types";
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -33,7 +33,7 @@ async function saveDialogSafe(opts: Record<string, unknown>): Promise<string | n
   }
   if (isAndroidRuntime()) {
     // The dialog plugin resolves filter extensions through MimeTypeMap; unknown extensions
-    // (cshon, ecm) leave */* PLUS an empty EXTRA_MIME_TYPES, which hides providers (e.g.
+    // (cshon) leave */* PLUS an empty EXTRA_MIME_TYPES, which hides providers (e.g.
     // Google Drive) in the ACTION_CREATE_DOCUMENT picker. A wildcard that resolves to a
     // single "*/*" type avoids the MIME whitelist entirely. Desktop keeps the real filters.
     merged.filters = [{ name: "All files", extensions: ["*/*"] }];
@@ -107,7 +107,7 @@ function generateId(): string {
 
 function displayNameFromPath(filePath: string, fallback: string): string {
   const seg = filePath.split(/[/\\]/).pop() || "";
-  const cleaned = seg.replace(/\.(cshon|ecm)$/, "");
+  const cleaned = seg.replace(/\.cshon$/, "");
   return cleaned !== seg && cleaned ? cleaned : fallback;
 }
 
@@ -141,6 +141,46 @@ function seedListColumnOptions(
     if (options === col.options && !toAdd.length) return col;
     return { ...col, options: [...options, ...toAdd] };
   });
+}
+
+/**
+ * Sub-categories used to be nested under income/expense. They are now one flat
+ * list on the cashbook, because one name can legitimately apply to both (an
+ * insurance premium can be an outgoing payment and a reimbursement).
+ *
+ * Older files are flattened on load: names merge case-insensitively, keeping the
+ * first spelling seen, and the nested copies are dropped so they cannot diverge
+ * from the flat list again.
+ */
+function migrateSubcategories(cashbook: CashBook): { cashbook: CashBook; migrated: boolean } {
+  const flat: Subcategory[] = [...(cashbook.subcategories ?? [])];
+  const seen = new Set(flat.map((s) => s.name.toLowerCase()));
+  const nested = cashbook.categories.flatMap((c) => c.subcategories ?? []);
+
+  for (const sub of nested) {
+    const key = sub.name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    flat.push(sub);
+  }
+  // Entries can reference a sub-category that was never registered.
+  for (const entry of [...cashbook.transactions, ...cashbook.regularPayments]) {
+    if (!entry.subcategory || seen.has(entry.subcategory.toLowerCase())) continue;
+    seen.add(entry.subcategory.toLowerCase());
+    flat.push({ id: generateId(), name: entry.subcategory, capitalizedName: entry.subcategory });
+  }
+
+  const hadNested = nested.length > 0 || cashbook.categories.some((c) => c.subcategories !== undefined);
+  const changed = hadNested || !cashbook.subcategories;
+  if (!changed) return { cashbook, migrated: false };
+  return {
+    cashbook: {
+      ...cashbook,
+      subcategories: flat,
+      categories: cashbook.categories.map(({ subcategories: _dropped, ...rest }) => rest),
+    },
+    migrated: true,
+  };
 }
 
 function seedCashbookListOptions(cashbook: CashBook): { cashbook: CashBook; seeded: boolean } {
@@ -200,15 +240,14 @@ function createDefaultCashBook(name: string, currency = "â‚¹", beginningBala
         id: generateId(),
         name: "incomes",
         capitalizedName: "Incomes",
-        subcategories: [],
       },
       {
         id: generateId(),
         name: "expenses",
         capitalizedName: "Expenses",
-        subcategories: [],
       },
     ],
+    subcategories: [],
     regularPayments: [],
     settings: {
       colorScheme: "system",
@@ -260,11 +299,11 @@ setActiveDialog: (dialog: string | null) => void;
   removeTransaction: (txId: string) => void;
   deleteSelectedTransaction: () => void;
 
-addSubcategory: (categoryName: string, subcategoryName: string) => void;
-  ensureSubcategory: (categoryName: string, subcategoryName: string) => void;
-  subcategoryUsage: (categoryName: string, subcategoryName: string) => number;
-  removeSubcategory: (categoryName: string, subcategoryName: string) => boolean;
-  renameSubcategory: (categoryName: string, oldName: string, newName: string) => boolean;
+addSubcategory: (subcategoryName: string) => void;
+  ensureSubcategory: (subcategoryName: string) => void;
+  subcategoryUsage: (subcategoryName: string) => number;
+  removeSubcategory: (subcategoryName: string) => boolean;
+  renameSubcategory: (oldName: string, newName: string) => boolean;
   addCustomColumnOption: (columnId: string, optionName: string) => void;
   addRegularPayment: (payment: Omit<RegularPayment, "id">) => void;
   removeRegularPayment: (paymentId: string) => void;
@@ -377,8 +416,13 @@ openCashbookFromData: (cashbook, filePath) => {
       set({ activeCashbookId: exists.cashbook.id });
       return;
     }
-    const seeded = seedCashbookListOptions(cashbook);
-    const openCb: OpenCashbook = { cashbook: seeded.cashbook, filePath, isDirty: seeded.seeded };
+    const migrated = migrateSubcategories(cashbook);
+    const seeded = seedCashbookListOptions(migrated.cashbook);
+    const openCb: OpenCashbook = {
+      cashbook: seeded.cashbook,
+      filePath,
+      isDirty: seeded.seeded || migrated.migrated,
+    };
     set((state) => ({
       openCashbooks: [...state.openCashbooks, openCb],
       activeCashbookId: openCb.cashbook.id,
@@ -426,7 +470,7 @@ openCashbookFromData: (cashbook, filePath) => {
     const { activeCashbookId, ensureSubcategory } = get();
     if (!activeCashbookId) return;
 
-    ensureSubcategory(tx.category, tx.subcategory);
+    ensureSubcategory(tx.subcategory);
 
     set((state) => {
       const activeCb = state.openCashbooks.find((cb) => cb.cashbook.id === state.activeCashbookId);
@@ -508,14 +552,12 @@ updateTransaction: (txId, updates) => {
     if (selectedTransactionId) set({ activeDialog: "confirm-delete" });
   },
 
-addSubcategory: (categoryName, subcategoryName) => {
+addSubcategory: (subcategoryName) => {
     const name = subcategoryName.trim();
     if (!name) return;
     const activeCb = get().getActiveCashbook();
     if (!activeCb) return;
-    const cat = activeCb.cashbook.categories.find((c) => c.name === categoryName);
-    if (!cat) return;
-    if (cat.subcategories.some((s) => s.name.toLowerCase() === name.toLowerCase())) return;
+    if ((activeCb.cashbook.subcategories ?? []).some((s) => s.name.toLowerCase() === name.toLowerCase())) return;
     set((state) => ({
       openCashbooks: state.openCashbooks.map((cb) =>
         cb.cashbook.id === state.activeCashbookId
@@ -524,17 +566,10 @@ addSubcategory: (categoryName, subcategoryName) => {
               isDirty: true,
               cashbook: {
                 ...cb.cashbook,
-                categories: cb.cashbook.categories.map((cat) =>
-                  cat.name === categoryName
-                    ? {
-                        ...cat,
-                        subcategories: [
-                          ...cat.subcategories,
-                          { id: generateId(), name, capitalizedName: name },
-                        ],
-                      }
-                    : cat
-                ),
+                subcategories: [
+                  ...(cb.cashbook.subcategories ?? []),
+                  { id: generateId(), name, capitalizedName: name },
+                ],
               },
             }
           : cb
@@ -542,44 +577,41 @@ addSubcategory: (categoryName, subcategoryName) => {
     }));
   },
 
-  ensureSubcategory: (categoryName, subcategoryName) => {
+  ensureSubcategory: (subcategoryName) => {
     if (!subcategoryName) return;
     const activeCb = get().getActiveCashbook();
     if (!activeCb) return;
-    const cat = activeCb.cashbook.categories.find((c) => c.name === categoryName);
-    if (cat && !cat.subcategories.some((s) => s.name === subcategoryName)) {
-      get().addSubcategory(categoryName, subcategoryName);
+    if (!(activeCb.cashbook.subcategories ?? []).some((s) => s.name === subcategoryName)) {
+      get().addSubcategory(subcategoryName);
     }
   },
 
   /**
-   * How many entries (transactions + regular payments) depend on a
-   * subcategory. Drives the delete affordance: a subcategory in use must be
-   * renamed instead of deleted, otherwise those entries would keep a name that
-   * no longer exists in the category.
+   * How many entries (transactions + regular payments) depend on a subcategory.
+   * Drives the delete affordance: a subcategory in use must be renamed instead
+   * of deleted, otherwise those entries would keep a name that no longer exists
+   * in the cashbook.
+   *
+   * Counts across income and expense together, because the list is flat — the
+   * same subcategory is legitimately used on both sides.
    */
-  subcategoryUsage: (categoryName, subcategoryName) => {
+  subcategoryUsage: (subcategoryName) => {
     const activeCb = get().getActiveCashbook();
     if (!activeCb) return 0;
-    const idx = categoryIndexFor(activeCb.cashbook.categories, categoryName);
-    if (idx === -1) return 0;
-    const aliases = categoryAliases(activeCb.cashbook.categories, idx);
     const { transactions, regularPayments } = activeCb.cashbook;
-    const usedBy = (category: string, subcategory: string) =>
-      subcategory === subcategoryName && aliases.includes(category);
     return (
-      transactions.filter((tx) => usedBy(tx.category, tx.subcategory)).length +
-      regularPayments.filter((rp) => usedBy(rp.category, rp.subcategory)).length
+      transactions.filter((tx) => tx.subcategory === subcategoryName).length +
+      regularPayments.filter((rp) => rp.subcategory === subcategoryName).length
     );
   },
 
   /** Removes a subcategory. Refused while any entry still uses it. */
-  removeSubcategory: (categoryName, subcategoryName) => {
-    if (get().subcategoryUsage(categoryName, subcategoryName) > 0) return false;
+  removeSubcategory: (subcategoryName) => {
+    if (get().subcategoryUsage(subcategoryName) > 0) return false;
     const activeCb = get().getActiveCashbook();
     if (!activeCb) return false;
-    const cat = activeCb.cashbook.categories.find((c) => c.name === categoryName);
-    if (!cat?.subcategories.some((s) => s.name === subcategoryName)) return false;
+    const subs = activeCb.cashbook.subcategories ?? [];
+    if (!subs.some((s) => s.name === subcategoryName)) return false;
     set((state) => ({
       openCashbooks: state.openCashbooks.map((cb) =>
         cb.cashbook.id === state.activeCashbookId
@@ -588,11 +620,7 @@ addSubcategory: (categoryName, subcategoryName) => {
               isDirty: true,
               cashbook: {
                 ...cb.cashbook,
-                categories: cb.cashbook.categories.map((c) =>
-                  c.name === categoryName
-                    ? { ...c, subcategories: c.subcategories.filter((s) => s.name !== subcategoryName) }
-                    : c
-                ),
+                subcategories: subs.filter((s) => s.name !== subcategoryName),
               },
             }
           : cb
@@ -602,20 +630,15 @@ addSubcategory: (categoryName, subcategoryName) => {
   },
 
   /** Renames a subcategory and cascades the new name to every entry using it. */
-  renameSubcategory: (categoryName, oldName, newName) => {
+  renameSubcategory: (oldName, newName) => {
     const name = newName.trim();
     if (!name || name === oldName) return false;
     const activeCb = get().getActiveCashbook();
     if (!activeCb) return false;
-    const idx = categoryIndexFor(activeCb.cashbook.categories, categoryName);
-    if (idx === -1) return false;
-    const cat = activeCb.cashbook.categories[idx];
-    const target = cat?.subcategories.find((s) => s.name === oldName);
+    const subs = activeCb.cashbook.subcategories ?? [];
+    const target = subs.find((s) => s.name === oldName);
     if (!target) return false;
-    if (cat!.subcategories.some((s) => s.id !== target.id && s.name.toLowerCase() === name.toLowerCase())) return false;
-    const aliases = categoryAliases(activeCb.cashbook.categories, idx);
-    const applies = (category: string, subcategory: string) =>
-      subcategory === oldName && aliases.includes(category);
+    if (subs.some((s) => s.id !== target.id && s.name.toLowerCase() === name.toLowerCase())) return false;
     set((state) => ({
       openCashbooks: state.openCashbooks.map((cb) =>
         cb.cashbook.id === state.activeCashbookId
@@ -624,21 +647,14 @@ addSubcategory: (categoryName, subcategoryName) => {
               isDirty: true,
               cashbook: {
                 ...cb.cashbook,
-                categories: cb.cashbook.categories.map((c, i) =>
-                  i === idx
-                    ? {
-                        ...c,
-                        subcategories: c.subcategories.map((s) =>
-                          s.id === target.id ? { ...s, name, capitalizedName: name } : s
-                        ),
-                      }
-                    : c
+                subcategories: subs.map((s) =>
+                  s.id === target.id ? { ...s, name, capitalizedName: name } : s
                 ),
                 transactions: cb.cashbook.transactions.map((tx) =>
-                  applies(tx.category, tx.subcategory) ? { ...tx, subcategory: name } : tx
+                  tx.subcategory === oldName ? { ...tx, subcategory: name } : tx
                 ),
                 regularPayments: cb.cashbook.regularPayments.map((rp) =>
-                  applies(rp.category, rp.subcategory) ? { ...rp, subcategory: name } : rp
+                  rp.subcategory === oldName ? { ...rp, subcategory: name } : rp
                 ),
               },
             }
@@ -745,23 +761,20 @@ importTransactions: async (csvData, mappings) => {
                   customColumns: seededCols,
                   visibleColumns: [...cb.cashbook.settings.visibleColumns, ...newColumnKeys],
                 },
-                categories: cb.cashbook.categories.map((cat, idx) => {
-                  const matchesCat = (txCategory: string) =>
-                    cat.name === txCategory ||
-                    (idx === 0 && txCategory === "incomes") ||
-                    (idx === 1 && txCategory === "expenses");
-                  const existingNames = new Set(cat.subcategories.map((s) => s.name));
-                  const toAdd: typeof cat.subcategories = [];
+                // One flat list, so a sub-category seen on either an income or an expense row
+                // is registered once for the whole cashbook.
+                subcategories: (() => {
+                  const existingNames = new Set((cb.cashbook.subcategories ?? []).map((s) => s.name));
+                  const toAdd: Subcategory[] = [];
                   for (const tx of newTxs) {
-                    if (!tx.subcategory || !matchesCat(tx.category)) continue;
+                    if (!tx.subcategory) continue;
                     if (existingNames.has(tx.subcategory)) continue;
-                    if (toAdd.some((s) => s.name === tx.subcategory)) continue;
                     existingNames.add(tx.subcategory);
                     toAdd.push({ id: generateId(), name: tx.subcategory, capitalizedName: tx.subcategory });
                   }
-                  addedSubs += toAdd.length;
-                  return toAdd.length ? { ...cat, subcategories: [...cat.subcategories, ...toAdd] } : cat;
-                }),
+                  addedSubs = toAdd.length;
+                  return [...(cb.cashbook.subcategories ?? []), ...toAdd];
+                })(),
                 transactions: mergeByDate(cb.cashbook.transactions, newTxList),
               },
             }
@@ -854,9 +867,8 @@ updateCategoryNames: (categoryNames) => {
                   return cat;
                 }),
                 // Entries store the category name denormalized, so they must
-                // follow the rename or they stop resolving to this category's
-                // subcategories and their names stop matching after a
-                // second rename.
+                // follow the rename or they stop resolving to this category
+                // after a second rename.
                 transactions: renameMap.size
                   ? cb.cashbook.transactions.map((tx) => ({ ...tx, category: remap(tx.category) }))
                   : cb.cashbook.transactions,
@@ -895,7 +907,7 @@ saveCashbook: async () => {
 
       if (!filePath) {
         const selected = await saveDialogSafe({
-          filters: [{ name: "Cashonn", extensions: ["cshon", "ecm"] }],
+          filters: [{ name: "Cashonn", extensions: ["cshon"] }],
           defaultPath: target.cashbook.name + ".cshon",
         });
         if (!selected) {
@@ -939,7 +951,7 @@ saveCashbook: async () => {
 
     try {
       const selected = await saveDialogSafe({
-        filters: [{ name: "Cashonn", extensions: ["cshon", "ecm"] }],
+        filters: [{ name: "Cashonn", extensions: ["cshon"] }],
         defaultPath: target.cashbook.name + ".cshon",
       });
       if (!selected) {
@@ -1138,7 +1150,7 @@ refreshActiveCashbook: async () => {
         ? await openDocumentSafe()
         : await openDialogSafe({
             multiple: false,
-            filters: [{ name: "Cashonn", extensions: ["cshon", "ecm"] }],
+            filters: [{ name: "Cashonn", extensions: ["cshon"] }],
           }).then((picked) => (Array.isArray(picked) ? picked[0] : picked)) ?? null;
       if (!filePath) {
         get().setStatusMessage("Ready");

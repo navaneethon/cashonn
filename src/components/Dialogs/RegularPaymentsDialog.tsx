@@ -31,8 +31,9 @@ export function RegularPaymentsDialog({ open, onOpenChange }: RegularPaymentsDia
     if (!name || !amount || !nextPayment) return;
     const trimmedName = name.trim();
 
-    ensureSubcategory("incomes", trimmedName);
-    ensureSubcategory("expenses", trimmedName);
+    // Flat list: registering once makes the sub-category available on both the
+    // income and expense sides, so no per-category seeding is needed.
+    ensureSubcategory(trimmedName);
 
     addRegularPayment({
       name: trimmedName,

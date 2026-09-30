@@ -29,7 +29,12 @@ export interface Category {
   id: string;
   name: string;
   capitalizedName: string;
-  subcategories: Subcategory[];
+  /**
+   * Legacy: subcategories used to be nested per category. They now live in
+   * `CashBook.subcategories` so one sub-category can sit under both income and
+   * expense. Kept optional so older files still type-check while they migrate.
+   */
+  subcategories?: Subcategory[];
 }
 
 export interface Subcategory {
@@ -74,6 +79,13 @@ export interface CashBook {
   type: "standard" | "business";
   transactions: Transaction[];
   categories: Category[];
+  /**
+   * One flat list for the whole cashbook. A sub-category is not owned by
+   * income or expense, because the same one legitimately applies to both
+   * (e.g. "Insurance"). Optional so files saved before this change migrate on
+   * load instead of failing to parse.
+   */
+  subcategories?: Subcategory[];
   regularPayments: RegularPayment[];
   settings: CashBookSettings;
 }

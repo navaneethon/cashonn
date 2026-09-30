@@ -23,14 +23,13 @@ export function FilterDialog({ open, onOpenChange }: FilterDialogProps) {
   const [subcategory, setSubcategory] = useState("all");
   const [customFilters, setCustomFilters] = useState<Record<string, string>>({});
 
+  // One flat list for the whole cashbook; transactions are still scanned so a
+  // legacy row with an unregistered sub-category still shows up as a choice.
   const allSubcategories = useMemo(() => {
-    const categories = activeCb?.cashbook.categories ?? [];
     const transactions = activeCb?.cashbook.transactions ?? [];
     const seen = new Map<string, { id: string; name: string; capitalizedName: string }>();
-    for (const cat of categories) {
-      for (const sub of cat.subcategories) {
-        if (!seen.has(sub.name)) seen.set(sub.name, sub);
-      }
+    for (const sub of activeCb?.cashbook.subcategories ?? []) {
+      if (!seen.has(sub.name)) seen.set(sub.name, sub);
     }
     for (const tx of transactions) {
       if (tx.subcategory && !seen.has(tx.subcategory)) {
