@@ -1,6 +1,6 @@
 [package]
 name = "cashonn"
-version = "1.13.0"
+version = "1.14.0"
 description = "Cashonn - Personal Finance Software"
 authors = ["Navaneeth Narayanan"]
 edition = "2021"

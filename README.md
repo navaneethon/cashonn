@@ -2,7 +2,7 @@
 
 Cross-platform cash-bookkeeping app for desktop (Windows) and Android. Built with **Tauri 2** + **React 19** + **TypeScript** + **Vite** + **Tailwind CSS v4** + **shadcn/ui v4**.
 
-**Current version:** `v1.13.0` · **App id:** `com.cashonn.app` · **Author:** Navaneeth Narayanan · **Cashbook extension:** `.cshon` · **Window:** 1280×800 (min 1024×700)
+**Current version:** `v1.14.0` · **App id:** `com.cashonn.app` · **Author:** Navaneeth Narayanan · **Cashbook extension:** `.cshon` · **Window:** 1280×800 (min 1024×700)
 
 > This repository holds the application source. Repository history begins at `v1.13.0`; earlier versions predate this repository.
 
