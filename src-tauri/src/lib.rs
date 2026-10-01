@@ -7,7 +7,26 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_fs::{FilePath, FsExt, OpenOptions};
 
+/// `Value::default()` is `Null`, which would round-trip a transaction's custom data as
+/// `"customData": null` - not the object the TypeScript type promises. Default to `{}` instead so
+/// a file written before custom columns existed loads as an entry with no custom values.
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+/// Both structs mirror `src/types/index.ts` exactly, and that mirror is load-bearing.
+///
+/// `deny_unknown_fields` is what makes this safe to maintain. Serde's default is to silently
+/// ignore keys it does not know when reading and to omit them when writing - which means a field
+/// added to the TypeScript type but forgotten here is destroyed on the next save with no error
+/// anywhere. That is exactly how `subcategories` (the flat sub-category list added in v1.14.0) was
+/// being dropped on every write. With the attribute, drift fails loudly at load instead.
+///
+/// The cost is that a genuine schema change must touch this file in the same commit. That is the
+/// point: it is a deliberate tripwire, not a limitation. If this ever becomes painful, the better
+/// answer is to delete the structs and pass `serde_json::Value` through untouched (see DR-58).
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct Transaction {
     pub id: String,
     pub date: String,
@@ -19,11 +38,16 @@ pub struct Transaction {
     pub amount: f64,
     #[serde(rename = "orderOfEntry")]
     pub order_of_entry: u32,
-    #[serde(rename = "customData", skip_serializing_if = "Option::is_none")]
-    pub custom_data: Option<serde_json::Value>,
+    /// Always written, never omitted. The TypeScript type declares `customData` as required, so
+    /// the previous `Option<Value>` + `skip_serializing_if` made the round trip asymmetric: Rust
+    /// decided whether the key existed while the frontend assumed it always did. `default` keeps
+    /// files written before custom columns existed loadable.
+    #[serde(rename = "customData", default = "empty_object")]
+    pub custom_data: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct CashBook {
     pub id: String,
     pub name: String,
@@ -41,6 +65,12 @@ pub struct CashBook {
     pub book_type: String,
     pub transactions: Vec<Transaction>,
     pub categories: Vec<serde_json::Value>,
+    /// The flat, cashbook-wide sub-category list (v1.14.0). This field was missing, so serde
+    /// dropped it on read and omitted it on write - the list was never on disk, and re-seeding it
+    /// from `transactions[].subcategory` on each open regenerated ids and capitalised names for
+    /// any sub-category that had no transactions of its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subcategories: Vec<serde_json::Value>,
     #[serde(rename = "regularPayments")]
     pub regular_payments: Vec<serde_json::Value>,
     pub settings: serde_json::Value,
@@ -282,4 +312,154 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A cashbook with every field the TypeScript type can produce. This is the contract: if
+    /// someone adds a field to `src/types/index.ts` they must extend this fixture too, and
+    /// `round_trip_preserves_every_field` will tell them when they have not.
+    fn full_cashbook_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": "cb-1",
+            "name": "Household",
+            "description": "Household",
+            "currency": "₹",
+            "beginningBalance": 100.5,
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "passwordHash": "h",
+            "passwordSalt": "s",
+            "type": "standard",
+            "transactions": [{
+                "id": "t-1",
+                "date": "2026-01-02",
+                "type": "expenses",
+                "category": "expenses",
+                "subcategory": "Rent",
+                "description": "January rent",
+                "amount": 1200.0,
+                "orderOfEntry": 1,
+                "customData": { "col-1": "Recurring" }
+            }],
+            "categories": [
+                { "id": "c-1", "name": "incomes", "capitalizedName": "Incomes" },
+                { "id": "c-2", "name": "expenses", "capitalizedName": "Expenses" }
+            ],
+            // The field that was silently dropped on every save from v1.14.0 to v1.14.1.
+            "subcategories": [
+                { "id": "s-1", "name": "Rent", "capitalizedName": "Rent" },
+                { "id": "s-2", "name": "Unused", "capitalizedName": "Unused" }
+            ],
+            "regularPayments": [],
+            "settings": {
+                "colorScheme": "system",
+                "dateFormat": "dd-mm-yyyy",
+                "amountFormat": "standard",
+                "recordNumbering": "sequential",
+                "visibleColumns": ["date", "category"],
+                "splitIncomeExpenseColumns": true,
+                "sortBy": "date",
+                "sortDirection": "asc",
+                "customColumns": []
+            }
+        })
+    }
+
+    /// The core regression: read a cashbook, write it back, get the identical document.
+    /// `subcategories` used to fail this silently - it deserialized into a struct that had
+    /// nowhere to put it, and serialized back without it.
+    #[test]
+    fn round_trip_preserves_every_field() {
+        let original = full_cashbook_json();
+        let cashbook: CashBook = serde_json::from_value(original.clone()).expect("deserialize");
+        let written = serde_json::to_value(&cashbook).expect("serialize");
+        assert_eq!(original, written, "cashbook changed during a read/write round trip");
+    }
+
+    /// A sub-category with no transactions is the case data loss hid behind: name-based
+    /// re-seeding on load regenerates it, so only its id and capitalised name were ever at
+    /// risk. Assert the ids survive so that regression cannot come back quietly.
+    #[test]
+    fn subcategories_keep_their_identity() {
+        let original = full_cashbook_json();
+        let cashbook: CashBook = serde_json::from_value(original).expect("deserialize");
+        let written = serde_json::to_value(&cashbook).expect("serialize");
+        let subs = written["subcategories"].as_array().expect("subcategories array");
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[1]["id"], "s-2");
+        assert_eq!(subs[1]["capitalizedName"], "Unused");
+    }
+
+    /// Files written before custom columns existed have no `customData` key. They must load,
+    /// and the value they gain must be an empty object - not `null`, which `Value::default()`
+    /// would have produced and which the TypeScript `Record<string, string>` does not allow.
+    #[test]
+    fn missing_custom_data_defaults_to_empty_object() {
+        let mut original = full_cashbook_json();
+        original["transactions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("customData");
+
+        let cashbook: CashBook = serde_json::from_value(original.clone()).expect("deserialize");
+        assert_eq!(cashbook.transactions[0].custom_data, serde_json::json!({}));
+
+        let written = serde_json::to_value(&cashbook).expect("serialize");
+        assert_eq!(
+            written["transactions"][0]["customData"],
+            serde_json::json!({}),
+            "customData must be written as an object, never omitted and never null"
+        );
+    }
+
+    /// Cashbooks saved by v1.14.0/v1.14.1 have no `subcategories` key at all, because the Rust
+    /// struct never wrote one. They must still open.
+    #[test]
+    fn cashbook_without_subcategories_still_loads() {
+        let mut original = full_cashbook_json();
+        original
+            .as_object_mut()
+            .unwrap()
+            .remove("subcategories");
+
+        let cashbook: CashBook = serde_json::from_value(original).expect("deserialize");
+        assert!(cashbook.subcategories.is_empty());
+    }
+
+    /// The tripwire. Before this, a field added to the TypeScript type and forgotten here was
+    /// destroyed on the next save with no error. Now it fails at load, which is loud and local.
+    #[test]
+    fn unknown_cashbook_field_is_rejected() {
+        let mut original = full_cashbook_json();
+        original["someFieldFromTheFuture"] = serde_json::json!("value");
+
+        let err = serde_json::from_value::<CashBook>(original).expect_err("must reject");
+        assert!(
+            err.to_string().contains("someFieldFromTheFuture"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_transaction_field_is_rejected() {
+        let mut original = full_cashbook_json();
+        original["transactions"][0]["someFieldFromTheFuture"] = serde_json::json!(1);
+
+        let err = serde_json::from_value::<CashBook>(original).expect_err("must reject");
+        assert!(
+            err.to_string().contains("someFieldFromTheFuture"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    /// Guards the mojibake that shipped in `cashbookStore.ts`: the rupee sign written as UTF-8
+    /// bytes then re-encoded, which turned U+20B9 into the three characters `â‚¹`. Any cashbook
+    /// the app writes should carry the real sign.
+    #[test]
+    fn rupee_currency_survives_the_boundary() {
+        let cashbook: CashBook = serde_json::from_value(full_cashbook_json()).expect("deserialize");
+        assert_eq!(cashbook.currency, "₹");
+    }
 }

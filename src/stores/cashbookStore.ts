@@ -225,7 +225,7 @@ async function closeWindow(): Promise<void> {
   }
 }
 
-function createDefaultCashBook(name: string, currency = "â‚¹", beginningBalance = 0, bookType: "standard" | "business" = "standard", description = ""): CashBook {
+function createDefaultCashBook(name: string, currency = "₹", beginningBalance = 0, bookType: "standard" | "business" = "standard", description = ""): CashBook {
   return {
     id: generateId(),
     name,
@@ -401,7 +401,7 @@ const seeded = seedCashbookListOptions(cashbook.cashbook);
     get().processDuePayments(cashbook.cashbook.id);
   },
 
-  openNewCashbook: (name, currency = "â‚¹", beginningBalance = 0, bookType = "standard", description = "") => {
+  openNewCashbook: (name, currency = "₹", beginningBalance = 0, bookType = "standard", description = "") => {
     const cashbook = createDefaultCashBook(name, currency, beginningBalance, bookType, description);
     const openCb: OpenCashbook = { cashbook, filePath: "", isDirty: true };
     set((state) => ({
