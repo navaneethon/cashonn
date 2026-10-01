@@ -68,6 +68,14 @@ class DocPlugin(private val activity: Activity) : Plugin(activity) {
     @Volatile private var state: String = IDLE
     @Volatile private var pickedUri: String? = null
     @Volatile private var failure: String? = null
+
+    /**
+     * Ceiling on how long the print WebView gets to load the document before the invoke is
+     * failed. `onPageFinished` is the only other thing that answers it, and a WebView that never
+     * finishes loading - or one destroyed out from under the callback - would otherwise leave
+     * the frontend waiting forever.
+     */
+    const val PRINT_PREPARE_TIMEOUT_MS = 10_000L
   }
 
   /**
@@ -258,6 +266,19 @@ class DocPlugin(private val activity: Activity) : Plugin(activity) {
     }
 
     activity.runOnUiThread {
+      // `printManager.print` starts the system print dialog as a new Activity, which pauses this
+      // app. A Tauri invoke response only reaches the webview while the app is in the foreground,
+      // so a resolve sent *after* that call is silently dropped and the JS promise never settles -
+      // the frontend then sits on "Printing..." forever and the tab cannot be closed. Same
+      // constraint documented on openDocument. So every path answers first, while still
+      // foregrounded. `settled` keeps the first answer the only one.
+      var settled = false
+      fun settleError(message: String) {
+        if (settled) return
+        settled = true
+        invoke.reject(message)
+      }
+
       try {
         val printManager = activity.getSystemService(Context.PRINT_SERVICE) as? PrintManager
         if (printManager == null) {
@@ -278,16 +299,22 @@ class DocPlugin(private val activity: Activity) : Plugin(activity) {
           override fun onPageFinished(view: WebView, url: String) {
             try {
               val adapter = view.createPrintDocumentAdapter(jobName)
+              // Answer first, then launch the dialog.
+              if (!settled) {
+                settled = true
+                invoke.resolve(JSObject())
+              }
+              // ISO_A4 rather than UNKNOWN_PORTRAIT: several OEM print dialogs render a blank
+              // page or refuse the job outright when handed an unknown media size.
               printManager.print(
                 jobName,
                 adapter,
                 PrintAttributes.Builder()
-                  .setMediaSize(PrintAttributes.MediaSize.UNKNOWN_PORTRAIT)
+                  .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
                   .build()
               )
-              invoke.resolve(JSObject())
             } catch (ex: Exception) {
-              invoke.reject("Could not start printing: ${ex.message}")
+              settleError("Could not start printing: ${ex.message}")
             }
           }
 
@@ -296,13 +323,22 @@ class DocPlugin(private val activity: Activity) : Plugin(activity) {
             request: WebResourceRequest,
             error: WebResourceError
           ) {
-            invoke.reject("Could not render the document for printing: ${error.description}")
+            settleError("Could not render the document for printing: ${error.description}")
           }
         }
 
+        // Nothing above guarantees onPageFinished ever arrives. Without a ceiling the invoke is
+        // simply never answered and the app is wedged, so fail loudly instead.
+        webView.postDelayed({
+          settleError("The document took too long to prepare for printing")
+        }, PRINT_PREPARE_TIMEOUT_MS)
+
         webView.loadDataWithBaseURL(null, args.html, "text/html", "UTF-8", null)
       } catch (ex: Exception) {
-        invoke.reject(ex.message ?: "Could not start printing")
+        if (!settled) {
+          settled = true
+          invoke.reject(ex.message ?: "Could not start printing")
+        }
       }
     }
   }

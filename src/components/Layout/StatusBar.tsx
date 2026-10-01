@@ -6,6 +6,7 @@ export function StatusBar() {
   const activeCb = useActiveCashbook();
   const txCount = activeCb?.cashbook.transactions.length ?? 0;
   const hasFilter = !!useCashbookStore((s) => s.filter);
+  const upgraded = !!activeCb?.pendingNormalization && !activeCb?.isDirty;
   const statusMessage = useCashbookStore((s) => s.statusMessage);
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
@@ -44,6 +45,12 @@ export function StatusBar() {
       {activeCb && (
         <>
           <span className="shrink-0">{txCount} record{txCount !== 1 ? "s" : ""}</span>
+          {upgraded && (
+            <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+              <span className="size-1.5 rounded-full border border-current" />
+              {t("status.upgraded")}
+            </span>
+          )}
           {hasFilter && (
             <span className="flex shrink-0 items-center gap-1.5 text-primary font-medium">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">

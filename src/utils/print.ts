@@ -12,15 +12,33 @@ function isAndroidRuntime(): boolean {
   );
 }
 
-/** Hands the markup to the native PrintManager job. Kept in one place so the desktop path stays clean. */
-async function printCashbookNative(html: string, jobName: string): Promise<boolean> {
+/**
+ * Hands the markup to the native PrintManager job. Kept in one place so the desktop path stays
+ * clean.
+ *
+ * The Kotlin side has its own timeout, but the invoke itself can still be lost in transit — most
+ * realistically if the response is dropped because the print dialog Activity paused the app
+ * before it was sent. Without this ceiling the awaiting caller never settles, the status bar sits
+ * on "Printing..." and the tab cannot be closed. Belt and braces: a rejected invoke is reported,
+ * not swallowed.
+ *
+ * Returns a reason string on failure so the caller can tell the user what went wrong.
+ */
+async function printCashbookNative(html: string, jobName: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const timeoutMs = 15_000;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("print_cashbook", { html, jobName: jobName || "Cashonn" });
-    return true;
+    await Promise.race([
+      invoke("print_cashbook", { html, jobName: jobName || "Cashonn" }),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("The print job did not respond")), timeoutMs)
+      ),
+    ]);
+    return { ok: true };
   } catch (err) {
     console.error("Native print failed:", err);
-    return false;
+    const reason = err instanceof Error ? err.message : String(err);
+    return { ok: false, reason };
   }
 }
 
@@ -222,9 +240,16 @@ export function buildPrintHtml(cashbook: CashBook, filteredTransactions: Transac
  * opens the system print dialog (and therefore "Save as PDF" and any installed printer).
  * Everywhere else the iframe path is used, hardened to wait for the real `load` event.
  *
- * Resolves false when printing could not be started, so the caller can tell the user.
+ * On Android the system print dialog is the only route, and it always offers "Save as PDF" as a
+ * destination whether or not a printer is installed — so an absent printer is not a failure, it
+ * just means the user picks the PDF option.
+ *
+ * Resolves with the failure reason when printing could not be started, so the caller can tell the
+ * user instead of leaving them on a stale status message.
  */
-export async function printCashbook(cashbook: CashBook, filteredTransactions: Transaction[]): Promise<boolean> {
+export type PrintResult = { ok: true } | { ok: false; reason: string };
+
+export async function printCashbook(cashbook: CashBook, filteredTransactions: Transaction[]): Promise<PrintResult> {
   const html = buildPrintHtml(cashbook, filteredTransactions);
 
   if (isAndroidRuntime()) {
@@ -252,34 +277,37 @@ export async function printCashbook(cashbook: CashBook, filteredTransactions: Tr
   const doc = iframe.contentDocument;
   if (!doc) {
     cleanup();
-    return false;
+    return { ok: false, reason: "The browser refused to open a print frame" };
   }
 
-  return new Promise<boolean>((resolve) => {
+  return new Promise<PrintResult>((resolve) => {
     // Wait for the document to actually finish loading. The previous fixed 300ms delay was a
     // guess: on a slow webview the print dialog could open before the table had laid out, and
     // on a fast one it just wasted time. `load` is the real signal, with a ceiling so a document
     // that never fires it still prints something rather than hanging forever.
     let done = false;
-    const finish = (ok: boolean) => {
+    const finish = (reason: string | null) => {
       if (done) return;
       done = true;
       clearTimeout(ceiling);
       try {
-        if (ok) iframe.contentWindow?.focus();
+        iframe.contentWindow?.focus();
         iframe.contentWindow?.print();
       } catch (err) {
         console.error("Print failed:", err);
+        reason = err instanceof Error ? err.message : String(err);
       }
       // Give the dialog a moment to open before tearing the frame down.
       setTimeout(cleanup, 1000);
-      resolve(true);
+      resolve(reason ? { ok: false, reason } : { ok: true });
     };
 
-    const ceiling = setTimeout(() => finish(true), 2000);
+    // The ceiling still prints: a document that never fires `load` should produce a print dialog
+    // rather than silently doing nothing, so it passes a null reason.
+    const ceiling = setTimeout(() => finish(null), 2000);
     iframe.addEventListener(
       "load",
-      () => finish(true),
+      () => finish(null),
       { once: true }
     );
 

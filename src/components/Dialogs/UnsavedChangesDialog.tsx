@@ -1,4 +1,5 @@
 import { useCashbookStore } from "@/stores/cashbookStore";
+import { useTranslation } from "@/i18n/useTranslation";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
@@ -13,6 +14,7 @@ export function UnsavedChangesDialog({ open }: UnsavedChangesDialogProps) {
   const confirmSaveAndClose = useCashbookStore((s) => s.confirmSaveAndClose);
   const discardAndClose = useCashbookStore((s) => s.discardAndClose);
   const cancelClose = useCashbookStore((s) => s.cancelClose);
+  const { t } = useTranslation();
 
   // A tab close is about one cashbook; a window close is about every dirty one.
   const closingOne = pendingCloseCashbookId !== null;
@@ -30,25 +32,25 @@ export function UnsavedChangesDialog({ open }: UnsavedChangesDialogProps) {
     >
       <DialogContent className="sm:max-w-[420px]">
         <DialogHeader>
-          <DialogTitle>Unsaved Changes</DialogTitle>
+          <DialogTitle>{t("unsaved.title")}</DialogTitle>
           <DialogDescription>
-            {closingOne
-              ? `"${name}" has been changed. Do you want to save it before closing?`
-              : "The following cashbooks have unsaved changes. Do you want to save them before closing?"}
+            {closingOne ? t("unsaved.one").replace("{name}", name) : t("unsaved.many")}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2 py-2">
           {dirty.map((cb) => (
             <div key={cb.cashbook.id} className="flex items-center justify-between rounded-md border border-border px-3 py-2 text-sm">
-              <span className="font-medium">{cb.cashbook.name}</span>
-              <span className="text-xs text-muted-foreground">{cb.filePath ? "Modified" : "Unsaved file"}</span>
+              <span className="font-medium truncate">{cb.cashbook.name}</span>
+              <span className="text-xs text-muted-foreground shrink-0 ml-2">
+                {cb.filePath ? t("unsaved.modified") : t("unsaved.newFile")}
+              </span>
             </div>
           ))}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={cancelClose}>Cancel</Button>
-          <Button variant="outline" onClick={discardAndClose}>Don't Save</Button>
-          <Button onClick={confirmSaveAndClose}>{closingOne ? "Save" : "Save All"}</Button>
+          <Button variant="outline" onClick={cancelClose}>{t("dialog.cancel")}</Button>
+          <Button variant="outline" onClick={discardAndClose}>{t("unsaved.discard")}</Button>
+          <Button onClick={confirmSaveAndClose}>{closingOne ? t("unsaved.save") : t("unsaved.saveAll")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

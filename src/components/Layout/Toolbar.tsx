@@ -7,6 +7,7 @@ import { FilePlus, FolderOpen, Save, Printer, RotateCw, Filter, ArrowUpDown, Plu
 import { printCashbook } from "@/utils/print";
 import { applyFilter } from "@/utils/filter";
 import { isNarrowViewport, useIsNarrow } from "@/utils/useIsNarrow";
+import { useTranslation } from "@/i18n/useTranslation";
 
 /**
  * On a phone the 32px `size="icon"` default is well under the 44px touch-target guidance, so
@@ -42,6 +43,7 @@ export function Toolbar() {
   const setRightPanelOpen = useUIStore((s) => s.setRightPanelOpen);
 
   const setStatusMessage = useCashbookStore((s) => s.setStatusMessage);
+  const { t } = useTranslation();
   const narrow = useIsNarrow();
   const icon = narrow ? "size-5" : "size-4";
 
@@ -56,11 +58,18 @@ export function Toolbar() {
   const handlePrint = async () => {
     if (!activeCb) return;
     const txs = applyFilter(activeCb.cashbook.transactions, filter);
-    setStatusMessage("Printing...");
-    const ok = await printCashbook(activeCb.cashbook, txs);
-    if (!ok) {
-      setStatusMessage("Print could not be started - no print service available");
-    }
+    setStatusMessage(t("status.printing"));
+    // Always resolve the status message. The Android invoke used to be able to hang forever,
+    // which left the bar reading "Printing..." and the tab unclosable.
+    const result = await printCashbook(activeCb.cashbook, txs).catch((err: unknown) => ({
+      ok: false as const,
+      reason: err instanceof Error ? err.message : String(err),
+    }));
+    setStatusMessage(
+      result.ok
+        ? t("status.printReady")
+        : t("status.printFailed").replace("{reason}", result.reason)
+    );
   };
 
   return (

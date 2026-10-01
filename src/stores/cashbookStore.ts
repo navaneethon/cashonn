@@ -389,9 +389,9 @@ setFilter: (filter) => set({ filter }),
       set({ activeCashbookId: exists.cashbook.id, pendingCashbook: null });
       return;
     }
-    const seeded = seedCashbookListOptions(cashbook.cashbook);
+const seeded = seedCashbookListOptions(cashbook.cashbook);
     const toOpen: OpenCashbook = seeded.seeded
-      ? { ...cashbook, cashbook: seeded.cashbook, isDirty: true }
+      ? { ...cashbook, cashbook: seeded.cashbook, pendingNormalization: true }
       : cashbook;
     set((state) => ({
       openCashbooks: [...state.openCashbooks, toOpen],
@@ -418,16 +418,24 @@ openCashbookFromData: (cashbook, filePath) => {
     }
     const migrated = migrateSubcategories(cashbook);
     const seeded = seedCashbookListOptions(migrated.cashbook);
+    const normalized = seeded.seeded || migrated.migrated;
+    // A book that is merely upgraded on load is not dirty. The user changed nothing, so
+    // prompting to save would be asking them to confirm our own housekeeping; and since the
+    // migration is idempotent, discarding it costs nothing. Save on any real edit persists it.
     const openCb: OpenCashbook = {
       cashbook: seeded.cashbook,
       filePath,
-      isDirty: seeded.seeded || migrated.migrated,
+      isDirty: false,
+      pendingNormalization: normalized,
     };
     set((state) => ({
       openCashbooks: [...state.openCashbooks, openCb],
       activeCashbookId: openCb.cashbook.id,
     }));
     get().processDuePayments(cashbook.id);
+    // The "upgraded" wording is rendered translated by StatusBar from `pendingNormalization`,
+    // so the store stays free of user-facing copy it cannot localise.
+    get().setStatusMessage("Opened " + filePath);
   },
 
   openCashbookFromPath: async (filePath) => {
@@ -920,7 +928,7 @@ saveCashbook: async () => {
       await writeCashbookToPath(filePath, target.cashbook);
       set((state) => ({
         openCashbooks: state.openCashbooks.map((cb) =>
-          cb.cashbook.id === id ? { ...cb, filePath, isDirty: false, cashbook: { ...cb.cashbook, name: displayNameFromPath(filePath, cb.cashbook.name) } } : cb
+          cb.cashbook.id === id ? { ...cb, filePath, isDirty: false, pendingNormalization: false, cashbook: { ...cb.cashbook, name: displayNameFromPath(filePath, cb.cashbook.name) } } : cb
         ),
       }));
       setStatusMessage("Saved to " + filePath);
@@ -962,7 +970,7 @@ saveCashbook: async () => {
       await writeCashbookToPath(selected, target.cashbook);
       set((state) => ({
         openCashbooks: state.openCashbooks.map((cb) =>
-          cb.cashbook.id === id ? { ...cb, filePath: selected, isDirty: false, cashbook: { ...cb.cashbook, name: displayNameFromPath(selected, cb.cashbook.name) } } : cb
+          cb.cashbook.id === id ? { ...cb, filePath: selected, isDirty: false, pendingNormalization: false, cashbook: { ...cb.cashbook, name: displayNameFromPath(selected, cb.cashbook.name) } } : cb
         ),
       }));
       setStatusMessage("Saved to " + selected);
@@ -1069,10 +1077,12 @@ refreshActiveCashbook: async () => {
     try {
       const cashbook = await invokeSafe<CashBook>("read_cashbook", { path: activeCb.filePath });
       const seeded = seedCashbookListOptions(cashbook);
+      // Refresh is an explicit reload from disk, so it legitimately discards unsaved edits.
+      // Options seeded from the reloaded entries are our normalisation, not the user's work.
       set((state) => ({
         openCashbooks: state.openCashbooks.map((cb) =>
           cb.cashbook.id === activeCashbookId
-            ? { ...cb, cashbook: seeded.cashbook, isDirty: seeded.seeded }
+            ? { ...cb, cashbook: seeded.cashbook, isDirty: false, pendingNormalization: seeded.seeded }
             : cb
         ),
       }));

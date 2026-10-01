@@ -1,7 +1,41 @@
 import { useCashbookStore } from "@/stores/cashbookStore";
+import { useTranslation } from "@/i18n/useTranslation";
 import { X } from "lucide-react";
 
-function Tab({ name, isActive, isDirty, onClick, onClose }: { name: string; isActive: boolean; isDirty: boolean; onClick: () => void; onClose: () => void }) {
+function Tab({
+  name,
+  isActive,
+  isDirty,
+  upgradedOnly,
+  dirtyTitle,
+  upgradedTitle,
+  onClick,
+  onClose,
+}: {
+  name: string;
+  isActive: boolean;
+  isDirty: boolean;
+  upgradedOnly: boolean;
+  dirtyTitle: string;
+  upgradedTitle: string;
+  onClick: () => void;
+  onClose: () => void;
+}) {
+  // Two different states share one tab. An asterisk means "you changed this and it is not on
+  // disk" — destructive red, because closing now loses work. A hollow dot means "we upgraded
+  // this layout on open" — muted, because closing it costs nothing and re-opening redoes it.
+  const marker = isDirty ? (
+    <span className="text-destructive ml-1.5" title={dirtyTitle} aria-label={dirtyTitle}>
+      *
+    </span>
+  ) : upgradedOnly ? (
+    <span
+      className="text-muted-foreground ml-1.5 inline-block size-1.5 rounded-full border border-current align-middle"
+      title={upgradedTitle}
+      aria-label={upgradedTitle}
+    />
+  ) : null;
+
   return (
     <div
       role="tab"
@@ -13,7 +47,7 @@ function Tab({ name, isActive, isDirty, onClick, onClose }: { name: string; isAc
     >
       <span className="truncate max-w-[160px]">
         {name}
-        {isDirty && <span className="text-destructive ml-1.5">*</span>}
+        {marker}
       </span>
       <span
         role="button"
@@ -32,6 +66,7 @@ export function TabBar() {
   const activeCashbookId = useCashbookStore((s) => s.activeCashbookId);
   const setActiveCashbook = useCashbookStore((s) => s.setActiveCashbook);
   const requestCloseCashbook = useCashbookStore((s) => s.requestCloseCashbook);
+  const { t } = useTranslation();
 
   if (openCashbooks.length === 0) return null;
 
@@ -43,6 +78,9 @@ export function TabBar() {
           name={cb.cashbook.name}
           isActive={cb.cashbook.id === activeCashbookId}
           isDirty={cb.isDirty}
+          upgradedOnly={!cb.isDirty && !!cb.pendingNormalization}
+          dirtyTitle={t("tab.unsaved")}
+          upgradedTitle={t("tab.upgraded")}
           onClick={() => setActiveCashbook(cb.cashbook.id)}
           onClose={() => requestCloseCashbook(cb.cashbook.id)}
         />

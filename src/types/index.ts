@@ -94,6 +94,14 @@ export interface OpenCashbook {
   cashbook: CashBook;
   filePath: string;
   isDirty: boolean;
+  /**
+   * The book was normalised in memory while opening it — an old sub-category layout flattened,
+   * or list-column options seeded from existing entries. This is our doing, not the user's, so
+   * it does not make the book dirty: closing then re-opening simply redoes the same idempotent
+   * normalisation. Kept apart from `isDirty` so the tab can show "upgraded, not saved" instead of
+   * an unsaved-changes asterisk, and so closing never prompts to save work nobody typed.
+   */
+  pendingNormalization?: boolean;
 }
 
 export interface AppState {

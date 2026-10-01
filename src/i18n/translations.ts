@@ -92,6 +92,12 @@ const en = {
   // Status bar
   "status.ready": "Ready",
   "status.filtered": "Filtered",
+  "status.upgraded": "Upgraded on open — save to keep",
+  "status.printing": "Printing...",
+  "status.printReady": "Print dialog opened — choose a printer or Save as PDF",
+  "status.printFailed": "Could not print: {reason}",
+  "tab.unsaved": "Has changes not saved to disk",
+  "tab.upgraded": "Upgraded on open, not saved yet",
 
   // Dialogs
   "dialog.cancel": "Cancel",
@@ -100,6 +106,16 @@ const en = {
   "confirmDelete.title": "Delete Entry",
   "confirmDelete.message": "Are you sure you want to delete this entry?",
   "confirmDelete.confirm": "Delete",
+
+  // Unsaved changes
+  "unsaved.title": "Unsaved Changes",
+  "unsaved.one": "\"{name}\" has changes that aren't saved to disk.",
+  "unsaved.many": "These cashbooks have changes that aren't saved to disk.",
+  "unsaved.modified": "Modified",
+  "unsaved.newFile": "Not saved yet",
+  "unsaved.discard": "Discard",
+  "unsaved.save": "Save",
+  "unsaved.saveAll": "Save All",
 
   // New cashbook
   "newCashbook.title": "New Cash-book",
@@ -313,6 +329,12 @@ const ml: Record<TranslationKey, string> = {
   // Status bar
   "status.ready": "തയ്യാറാണ്",
   "status.filtered": "ഫിൽറ്റർ ചെയ്തു",
+  "status.upgraded": "തുറന്നുമ്പോൾ അപ്ഡേറ്റ് ചെയ്തു — സേവ് ചെയ്താൽ മാത്രം തുടരും",
+  "status.printing": "പ്രിന്റ് ചെയ്യുന്നു...",
+  "status.printReady": "പ്രിന്റ് ഡയലോഗ് തുറന്നു — ഒരു പ്രിന്ററോ Save as PDF തിരഞ്ഞെടുക്കുക",
+  "status.printFailed": "പ്രിന്റ് ചെയ്യാൻ കഴിഞ്ഞില്ല: {reason}",
+  "tab.unsaved": "ഡിസ്കിലേൽ സേവ് ചെയ്യാത്ത മാറ്റങ്ങൾ ഉണ്ട്",
+  "tab.upgraded": "തുറന്നുമ്പോൾ അപ്ഡേറ്റ് ചെയ്തത്, ഇതുവരെ സേവ് ചെയ്തിട്ടില്ല",
 
   // Dialogs
   "dialog.cancel": "റദ്ദാക്കുക",
@@ -321,6 +343,16 @@ const ml: Record<TranslationKey, string> = {
   "confirmDelete.title": "എൻട്രി ഇല്ലാതാക്കുക",
   "confirmDelete.message": "ഈ എൻട്രി ഇല്ലാതാക്കണോ എന്ന് ഉറപ്പാണോ?",
   "confirmDelete.confirm": "ഇല്ലാതാക്കുക",
+
+  // Unsaved changes
+  "unsaved.title": "സേവ് ചെയ്യാത്ത മാറ്റങ്ങൾ",
+  "unsaved.one": "\"{name}\" എന്ന ക്യാഷ്‌ബുക്കിൽ ഡിസ്കിലേൽ സേവ് ചെയ്യാത്ത മാറ്റങ്ങൾ ഉണ്ട്.",
+  "unsaved.many": "ഈ ക്യാഷ്‌ബുക്കുകളിൽ ഡിസ്കിലേൽ സേവ് ചെയ്യാത്ത മാറ്റങ്ങൾ ഉണ്ട്.",
+  "unsaved.modified": "മാറ്റിയത്",
+  "unsaved.newFile": "ഇതുവരെ സേവ് ചെയ്തിട്ടില്ല",
+  "unsaved.discard": "ഉപേക്ഷിക്കുക",
+  "unsaved.save": "സേവ് ചെയ്യുക",
+  "unsaved.saveAll": "എല്ലാം സേവ് ചെയ്യുക",
 
   // New cashbook
   "newCashbook.title": "പുതിയ ക്യാഷ്‌ബുക്ക്",
