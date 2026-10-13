@@ -1,0 +1,70 @@
+# Builds an unsigned iOS/iPadOS .ipa on a macOS runner.
+#
+# iOS apps cannot be cross-compiled from Windows or Linux: Tauri embeds the frontend
+# into a native binary and Xcode is required, so a macOS runner is mandatory. This
+# mirrors the macos-build.yml workflow.
+#
+# The artifact is UNSIGNED (`tauri ios build --no-sign`). It installs via a sideloading
+# tool (AltStore / SideStore / Xcode) and is intended for testing on a personal iPad,
+# not for App Store distribution. To ship through the App Store, remove --no-sign, add
+# the Apple signing secrets below, and pass --export-method app-store-connect:
+#   APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_PATH  (App Store Connect API key)
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_TEAM_ID (Developer cert)
+name: iOS build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-latest is Apple Silicon; aarch64-apple-ios is the device (iPad) target.
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      # Generates src-tauri/gen/apple (the Xcode project). It is not committed, so it
+      # is created fresh on every run — that also means a stale project can never ship.
+      - name: Initialize iOS project
+        run: npx tauri ios init
+
+      # Unsigned build: runs `xcodebuild archive` with code signing disabled, then
+      # packs the .app into a standard .ipa (Payload/). No Apple Developer account
+      # required.
+      - name: Build unsigned iPad .ipa
+        run: npx tauri ios build --no-sign
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: cashonn-ios-ipa
+          path: src-tauri/gen/apple/build/**/*.ipa
+          if-no-files-found: error
